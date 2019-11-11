@@ -1,0 +1,97 @@
+---
+title: "Primer intento estimación de participación nacional"
+output: html_notebook
+---
+
+
+```{r, message = FALSE}
+library(tidyverse)
+library(rstan)
+
+#preparar datos
+load("data/nal_2012.rda")
+
+# usamos los datos de los resultados finales de 2012
+muestra_part <- nal_2012 %>% 
+  dplyr::select(casilla_id, estrato, edo_id, tipo_casilla = casilla,
+                total_votos = total, ln_total)
+```
+
+
+
+```{r, fig.width = 5, fig.height = 3, message = FALSE}
+
+# resumen marco por estrato
+resumen_estratos <- muestra_part %>% 
+  group_by(estrato) %>% 
+  summarise(n_casillas = n(),
+            listado_nominal = sum(ln_total))
+
+ggplot(resumen_estratos, aes(x = n_casillas)) + 
+  geom_histogram(binwidth = 10, colour = 'white', fill = 'royalblue', alpha = 0.8) +
+  theme_light() +
+  labs(title = "Número de casillas por estrato",
+       x = 'Número de casillas',
+       y = 'Frecuencia')
+
+
+```
+
+## Definir observaciones
+
+```{stan, eval = FALSE}
+data {
+  int num_estratos;
+  int n[num_estratos]; // num casillas por estrato 
+  int N; // num casillas total
+  int est[N]; // indicador de estrato para cada casilla 
+  int y[N]; // conteos en cada casilla
+}
+```
+
+
+## Conocimiento previo
+
+
+
+```{r,  fig.width = 4, fig.height = 2, message = FALSE}
+part <- seq(0, 1, 0.001)
+dens_previa <- data.frame(part = part,
+                          dens = dbeta(part, 6, 6))
+
+dens_previa %>%
+  ggplot(aes(x = part, y = dens)) +
+  geom_line(colour = "#652b64") +
+  geom_area(aes(x = ifelse(part > 0.2 & part < 0.8, part, 0)),
+            alpha = 0.75, fill = "#652b64") +
+  labs(x = "x", y = "densidad") +
+  ylim(0,3) +
+  theme_minimal()
+```
+
+```{r,  fig.width = 4, fig.height = 2, message = FALSE}
+
+disp_previa <- data.frame(disp = abs(rnorm(1000,0, 0.15)))
+
+disp_previa %>%
+  ggplot(aes(x = disp)) +
+  geom_density(colour = "#652b64") +
+  labs(x = "x", y = "densidad") +
+  theme_minimal()
+```
+
+
+
+```{r}
+writeLines(readLines("src/stan_files/mod01_part.stan"))
+```
+
+```{r}
+iter <- 100
+sim_data <- list(k = 350, N = nrow(muestra_part), est = muestra_part$estrato, 
+                 votantes_nom = muestra_part$ln_total)
+muestras <- stan(file = "muestrear_inicial_part.stan", data = sim_data,
+                 iter = iter, warmup = 0, chains = 1, refresh = iter,
+                 seed = 232334, algorithm = "Fixed_param",
+                 pars = c("y", "prop", "part_est", "part"))
+```
