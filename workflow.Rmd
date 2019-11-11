@@ -90,7 +90,7 @@ writeLines(readLines("src/stan_files/mod01_part.stan"))
 iter <- 100
 sim_data <- list(k = 350, N = nrow(muestra_part), est = muestra_part$estrato, 
                  votantes_nom = muestra_part$ln_total)
-muestras <- stan(file = "muestrear_inicial_part.stan", data = sim_data,
+muestras <- stan(file = "src/stan_files/mod01_part.stan", data = sim_data,
                  iter = iter, warmup = 0, chains = 1, refresh = iter,
                  seed = 232334, algorithm = "Fixed_param",
                  pars = c("y", "prop", "part_est", "part"))
