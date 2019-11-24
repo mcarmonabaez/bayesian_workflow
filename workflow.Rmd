@@ -28,7 +28,7 @@ resumen_estratos <- muestra_part %>%
             listado_nominal = sum(ln_total))
 
 ggplot(resumen_estratos, aes(x = n_casillas)) + 
-  geom_histogram(binwidth = 10, colour = 'white', fill = 'royalblue', alpha = 0.8) +
+  geom_histogram(binwidth = 10, colour = 'white', fill = '#652b64', alpha = 0.8) +
   theme_light() +
   labs(title = "Número de casillas por estrato",
        x = 'Número de casillas',
@@ -88,10 +88,90 @@ writeLines(readLines("src/stan_files/mod01_part.stan"))
 
 ```{r}
 iter <- 100
-sim_data <- list(k = 350, N = nrow(muestra_part), est = muestra_part$estrato, 
+sim_data <- list(k = length(unique(muestra_part$estrato)),
+                 N = nrow(muestra_part), est = muestra_part$estrato, 
                  votantes_nom = muestra_part$ln_total)
 muestras <- stan(file = "src/stan_files/mod01_part.stan", data = sim_data,
                  iter = iter, warmup = 0, chains = 1, refresh = iter,
                  seed = 232334, algorithm = "Fixed_param",
                  pars = c("y", "prop", "part_est", "part"))
+
+saveRDS(muestras, "doc/muestras.rds")
+muestras <- read_rds('doc/muestras.rds')
+```
+
+```{r}
+sim_prop <- rstan::extract(muestras)$prop %>% as.numeric()
+sim_part <- rstan::extract(muestras)$part %>% as.numeric()
+sim_y <- rstan::extract(muestras)$y
+tibble(prop = sim_prop) %>% 
+  ggplot(aes(sample = prop)) +
+  geom_qq(distribution = stats::qunif) +
+  geom_abline(slope = 1, intercept = 0)
+quantile(sim_prop, c(0.05, 0.5, 0.95))
+```
+
+```{r, fig.width=6, fig.height=4}
+dim(sim_y)
+dat <- as_tibble(t(sim_y[1:15,]), .name_repair = "unique") %>% 
+  mutate(id = 1:143132) %>% gather(rep, votos, - id)
+ggplot(dat, aes(x = votos)) + facet_wrap( ~rep) +
+   geom_histogram()
+```
+
+
+```{r}
+modelo <- stan_model("src/stan_files/mod01_part_ajuste.stan")
+ajustar_sims <- function(iteracion, modelo, chains = 3){
+  datos_sim_2 <- muestra_part %>% mutate(y = sim_y[iteracion, ])
+  muestra_sim <- muestra_part %>% left_join(datos_sim_2 %>% select(-ln_total))
+  data <- list(k = length(unique(muestra_part$estrato)), 
+               N = nrow(muestra_part), n = nrow(muestra_sim), est = muestra_part$estrato, 
+             est_muestra = muestra_sim$estrato,
+                 votantes_nom = muestra_part$ln_total, y = muestra_sim$y,
+             votantes_nom_muestra = muestra_sim$ln_total)
+  ajuste <- sampling(modelo, data = data,
+                 warmup = 400, iter = 1500,  chains = chains, 
+                 thin = 3, 
+                 pars = c("part", "phi_total"))
+  sims_comp <- rstan::extract(ajuste)
+  sims_comp
+}
+iteracion <- 1
+sims_comp <- ajustar_sims(iteracion, modelo)
+ggplot(tibble(part = sims_comp$part), aes(sample = part)) + geom_qq() +
+  geom_hline(yintercept = sim_part[iteracion])
+```
+
+
+## Ajuste con datos reales
+
+
+```{r}
+muestra_part <- muestra_part %>% 
+  mutate(ln = ifelse(ln_total < total_votos, total_votos, ln_total))
+data <- list(k = length(unique(muestra_part$estrato)), 
+             N = nrow(muestra_part), n = nrow(muestra_part), est = muestra_part$estrato, 
+             est_muestra = muestra_part$estrato,
+             votantes_nom = muestra_part$ln, y = muestra_part$total_votos,
+             votantes_nom_muestra = muestra_part$ln)
+ajuste <- stan(file = "src/stan_files/mod01_part_ajuste.stan", data = data,
+                 warmup = 300, iter = 1500,  chains = 3, 
+                 pars = c("part", "phi_total"))
+```
+
+
+```{r}
+summary(ajuste)
+plot(ajuste, pars = c("part"))
+```
+
+## Posterior predictive checks
+
+```{r}
+ajuste_pp <- stan(file = "src/stan_files/mod01_part_ppc.stan", data = data,
+                 warmup = 100, iter = 1000,  chains = 1, 
+                 pars = c("y_sim"))
+sims_comp <- rstan::extract(ajuste_pp)
+
 ```

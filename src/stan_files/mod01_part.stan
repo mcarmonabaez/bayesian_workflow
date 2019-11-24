@@ -28,7 +28,7 @@ generated quantities {
   
   // participación por estrato
   for(j in 1:k){
-    part_est[j] = beta_rng(part, 1.0 / phi_total);
+    part_est[j] = beta_proportion_rng(part, 1.0 / phi_total);
   }
   
   // Simular comportamiento de la casillas
