@@ -10,30 +10,88 @@ library(rstan)
 
 #preparar datos
 load("data/nal_2012.rda")
+regiones <- read_csv('data/regiones.csv')
 
 # usamos los datos de los resultados finales de 2012
-muestra_part <- nal_2012 %>% 
+muestra <- nal_2012 %>% 
   dplyr::select(casilla_id, estrato, edo_id, tipo_casilla = casilla,
-                total_votos = total, ln_total)
+                total_votos = total, ln_total) %>% 
+  left_join(regiones)
+
+muestra_part <- muestra %>% 
+  filter(edo_id == 9) 
+
+aux <- data.frame(estrato = unique(muestra_part$estrato),
+                  estrato_aux = 1:length(unique(muestra_part$estrato)))
+
+muestra_part <- muestra_part %>% 
+  left_join(aux)
+
 ```
 
 
 
 ```{r, fig.width = 5, fig.height = 3, message = FALSE}
 
+# resumen distritos
+resumen_distritos <- nal_2012 %>%
+  group_by(edo_id, distrito_fed_17) %>% 
+  mutate(ln = ifelse(ln < total, total, ln)) %>% 
+  summarise(part = sum(total)/sum(ln)) %>% 
+  ungroup()
+
+ggplot(resumen_distritos, aes(part)) +
+  geom_histogram(binwidth = 0.01)
+
+resumen_distritos %>% 
+  group_by(edo_id) %>% 
+  mutate(mediana = median(part)) %>% 
+  arrange(mediana) %>% 
+  ungroup() %>% 
+  left_join(regiones) %>% 
+  mutate(edo_nombre = factor(edo_nombre, levels = unique(edo_nombre))) %>% 
+  ggplot(aes(edo_nombre, 100*part, fill = region)) +
+  geom_boxplot(alpha = 0.75) +
+  geom_hline(yintercept = 63.79, linetype = 2) +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_manual("región", values=c( "#7F0061", "#FFC857", "#FF503D", "#408E5B", "#255F85")) +
+  labs(y = '% participación electoral por distrito federal', x = 'estado',
+       title = 'Participación electoral',
+       subtitle = 'Elecciones presindenciales 2012')
+## 7.5 x 10 inches
+
 # resumen marco por estrato
-resumen_estratos <- muestra_part %>% 
+resumen_estratos <- muestra %>% 
   group_by(estrato) %>% 
   summarise(n_casillas = n(),
             listado_nominal = sum(ln_total))
 
 ggplot(resumen_estratos, aes(x = n_casillas)) + 
-  geom_histogram(binwidth = 10, colour = 'white', fill = '#652b64', alpha = 0.8) +
-  theme_light() +
+  geom_histogram(binwidth = 10, colour = 'white', fill = "#7F0061", alpha = 0.8) +
+  theme_minimal() +
   labs(title = "Número de casillas por estrato",
        x = 'Número de casillas',
        y = 'Frecuencia')
+#6.5 x 4 inches
 
+nal_2012 %>% 
+  ggplot(aes(total)) +
+  geom_histogram(binwidth = 20, colour = 'white', fill = "#7F0061", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Número de votos por casilla",
+       x = 'Número de votos',
+       y = 'Frecuencia')
+
+
+nal_2012 %>% 
+  filter(ln < 1000) %>% 
+  ggplot(aes(ln)) +
+  geom_histogram(binwidth = 20, colour = 'white', fill = "#7F0061", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Lista nominal por casilla",
+       x = 'Lista nominal',
+       y = 'Frecuencia')
 
 ```
 
@@ -89,7 +147,7 @@ writeLines(readLines("src/stan_files/mod01_part.stan"))
 ```{r}
 iter <- 100
 sim_data <- list(k = length(unique(muestra_part$estrato)),
-                 N = nrow(muestra_part), est = muestra_part$estrato, 
+                 N = nrow(muestra_part), est = muestra_part$estrato_aux, 
                  votantes_nom = muestra_part$ln_total)
 muestras <- stan(file = "src/stan_files/mod01_part.stan", data = sim_data,
                  iter = iter, warmup = 0, chains = 1, refresh = iter,
@@ -114,7 +172,7 @@ quantile(sim_prop, c(0.05, 0.5, 0.95))
 ```{r, fig.width=6, fig.height=4}
 dim(sim_y)
 dat <- as_tibble(t(sim_y[1:15,]), .name_repair = "unique") %>% 
-  mutate(id = 1:143132) %>% gather(rep, votos, - id)
+  mutate(id = 1:12408) %>% gather(rep, votos, - id)
 ggplot(dat, aes(x = votos)) + facet_wrap( ~rep) +
    geom_histogram()
 ```
@@ -126,8 +184,8 @@ ajustar_sims <- function(iteracion, modelo, chains = 3){
   datos_sim_2 <- muestra_part %>% mutate(y = sim_y[iteracion, ])
   muestra_sim <- muestra_part %>% left_join(datos_sim_2 %>% select(-ln_total))
   data <- list(k = length(unique(muestra_part$estrato)), 
-               N = nrow(muestra_part), n = nrow(muestra_sim), est = muestra_part$estrato, 
-             est_muestra = muestra_sim$estrato,
+               N = nrow(muestra_part), n = nrow(muestra_sim), est = muestra_part$estrato_aux, 
+             est_muestra = muestra_sim$estrato_aux,
                  votantes_nom = muestra_part$ln_total, y = muestra_sim$y,
              votantes_nom_muestra = muestra_sim$ln_total)
   ajuste <- sampling(modelo, data = data,
@@ -150,9 +208,9 @@ ggplot(tibble(part = sims_comp$part), aes(sample = part)) + geom_qq() +
 ```{r}
 muestra_part <- muestra_part %>% 
   mutate(ln = ifelse(ln_total < total_votos, total_votos, ln_total))
-data <- list(k = length(unique(muestra_part$estrato)), 
-             N = nrow(muestra_part), n = nrow(muestra_part), est = muestra_part$estrato, 
-             est_muestra = muestra_part$estrato,
+data <- list(k = length(unique(muestra_part$estrato_aux)), 
+             N = nrow(muestra_part), n = nrow(muestra_part), est = muestra_part$estrato_aux, 
+             est_muestra = muestra_part$estrato_aux,
              votantes_nom = muestra_part$ln, y = muestra_part$total_votos,
              votantes_nom_muestra = muestra_part$ln)
 ajuste <- stan(file = "src/stan_files/mod01_part_ajuste.stan", data = data,
@@ -172,6 +230,28 @@ plot(ajuste, pars = c("part"))
 ajuste_pp <- stan(file = "src/stan_files/mod01_part_ppc.stan", data = data,
                  warmup = 100, iter = 1000,  chains = 1, 
                  pars = c("y_sim"))
+saveRDS(ajuste_pp, 'doc/ajuste_pp.rds')
 sims_comp <- rstan::extract(ajuste_pp)
 
+```
+
+
+```{r}
+# checar por estrato
+dim(sims_comp$y_sim)
+m_tbl <- muestra_part %>% mutate(casilla = 1:dim(sims_comp$y_sim)[2]) 
+posterior_casilla <- as.data.frame(sims_comp$y_sim) %>% as_tibble %>% mutate(rep = 1:900) %>% 
+  gather(casilla, votos, -rep) %>% 
+  mutate(casilla = str_sub(casilla, 2, -1) %>% as.integer) %>% 
+  left_join(m_tbl)
+resumen <- posterior_casilla %>% group_by(rep, estrato_aux) %>%
+  summarise(votos = sum(total_votos), total = sum(total_votos)) %>% 
+  group_by(estrato_aux) %>% 
+  summarise(q05 = quantile(votos, 0.05), q95 = quantile(votos, 0.95), q50 = quantile(votos, 0.5),
+            total = total[1])
+
+resumen <- resumen %>% mutate(estrato_fct = fct_reorder(factor(estrato_aux), total))
+ggplot(resumen, aes(x=estrato_fct, y = total, ymin = q05, ymax = q95)) + 
+  geom_point() +
+  geom_errorbar(colour = "red")
 ```
