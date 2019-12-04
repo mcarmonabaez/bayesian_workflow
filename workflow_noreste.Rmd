@@ -1,0 +1,303 @@
+---
+title: "Primer intento estimación de participación nacional"
+output: html_notebook
+---
+
+
+```{r, message = FALSE}
+library(tidyverse)
+library(rstan)
+
+#preparar datos
+load("data/nal_2012.rda")
+regiones <- read_csv('data/regiones.csv')
+load("data/marco_nal_2018.rda")
+muestra <- read_delim("data/REMESAS0100012200.txt", delim = "|", skip = 1) %>% 
+  dplyr::select(edo_id = iD_ESTADO, total_votos = TOTAL)
+
+muestra <- read_delim("data/REMESAS0100012200.txt", delim = "|", skip = 1)
+muestra_pt <- muestra %>% select(iD_ESTADO, ID_ESTRATO_L, LISTA_NOMINAL, TOTAL)
+load("data/marco_nal_2018.rda")
+marco <- marco_nal_2018 %>% select(id, casilla_id, estrato, ln, 
+                                   edo_id = id_estado) %>% 
+  left_join(regiones)
+
+muestra_part <- muestra %>%  
+        dplyr::mutate( 
+            id = stringr::str_c(iD_ESTADO, SECCION, ID_CASILLA, TIPO_CASILLA,
+                EXT_CONTIGUA, sep = "-")) %>%
+        dplyr::mutate(OTROS = NULOS + CNR) %>%
+        dplyr::select(id, TOTAL) %>%
+        dplyr::left_join(marco) 
+
+# distribución de la muestra por región
+dist <- marco %>% 
+  group_by(region) %>%
+  tally %>% 
+  left_join(muestra_part 
+            %>% group_by(region) %>% 
+              summarise(n_muestra = n())) %>% 
+  mutate(prop = n_muestra/n)
+dist
+
+marco_noreste <- marco %>% 
+  filter(region == 'Noreste') 
+
+muestra_part_noreste <- muestra_part %>% 
+  filter(region == 'Noreste')
+
+aux <- data.frame(estrato = unique(muestra_part_noreste$estrato),
+                  estrato_aux = 1:length(unique(muestra_part_noreste$estrato)))
+
+muestra_part_noreste <- muestra_part_noreste %>% 
+  left_join(aux)
+marco_noreste <- marco_noreste %>% 
+  left_join(aux)
+
+```
+
+
+
+```{r, fig.width = 5, fig.height = 3, message = FALSE}
+
+# resumen distritos para elecciones de 2012
+resumen_distritos <- nal_2012 %>%
+  group_by(edo_id, distrito_fed_17) %>% 
+  mutate(ln = ifelse(ln < total, total, ln)) %>% 
+  summarise(part = sum(total)/sum(ln)) %>% 
+  ungroup()
+
+ggplot(resumen_distritos, aes(part)) +
+  geom_histogram(binwidth = 0.01)
+
+resumen_distritos %>% 
+  group_by(edo_id) %>% 
+  mutate(mediana = median(part)) %>% 
+  arrange(mediana) %>% 
+  ungroup() %>% 
+  left_join(regiones) %>% 
+  mutate(edo_nombre = factor(edo_nombre, levels = unique(edo_nombre))) %>% 
+  ggplot(aes(edo_nombre, 100*part, fill = region)) +
+  geom_boxplot(alpha = 0.75) +
+  geom_hline(yintercept = 63.79, linetype = 2) +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_manual("región", values=c( "#7F0061", "#FFC857", "#FF503D", "#408E5B", "#255F85")) +
+  labs(y = '% participación electoral por distrito federal', x = 'estado',
+       title = 'Participación electoral',
+       subtitle = 'Elecciones presindenciales 2012')
+## 7.5 x 10 inches
+
+# resumen marco por estrato
+resumen_estratos <- nal_2012 %>% 
+  group_by(estrato) %>% 
+  summarise(n_casillas = n(),
+            listado_nominal = sum(ln_total))
+
+ggplot(resumen_estratos, aes(x = n_casillas)) + 
+  geom_histogram(binwidth = 10, colour = 'white', fill = "#7F0061", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Número de casillas por estrato",
+       x = 'Número de casillas',
+       y = 'Frecuencia')
+#6.5 x 4 inches
+
+nal_2012 %>% 
+  ggplot(aes(total)) +
+  geom_histogram(binwidth = 20, colour = 'white', fill = "#7F0061", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Número de votos por casilla",
+       x = 'Número de votos',
+       y = 'Frecuencia')
+
+
+nal_2012 %>% 
+  filter(ln < 1000) %>% 
+  ggplot(aes(ln)) +
+  geom_histogram(binwidth = 20, colour = 'white', fill = "#7F0061", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Lista nominal por casilla",
+       x = 'Lista nominal',
+       y = 'Frecuencia')
+
+```
+
+## Definir observaciones
+
+```{stan, eval = FALSE}
+data {
+  int num_estratos;
+  int n[num_estratos]; // num casillas por estrato 
+  int N; // num casillas total
+  int est[N]; // indicador de estrato para cada casilla 
+  int y[N]; // conteos en cada casilla
+}
+```
+
+
+## Conocimiento previo
+
+
+
+```{r,  fig.width = 4, fig.height = 2, message = FALSE}
+part <- seq(0, 1, 0.001)
+dens_previa <- data.frame(part = part,
+                          dens = dbeta(part, 6, 6))
+
+dens_previa %>%
+  ggplot(aes(x = part, y = dens)) +
+  geom_line(colour = "#652b64") +
+  geom_area(aes(x = ifelse(part > 0.2 & part < 0.8, part, 0)),
+            alpha = 0.75, fill = "#652b64") +
+  labs(x = "x", y = "densidad") +
+  ylim(0,3) +
+  theme_minimal()
+```
+
+```{r,  fig.width = 4, fig.height = 2, message = FALSE}
+
+disp_previa <- data.frame(disp = abs(rnorm(1000,0, 0.15)))
+
+disp_previa %>%
+  ggplot(aes(x = disp)) +
+  geom_density(colour = "#652b64") +
+  labs(x = "x", y = "densidad") +
+  theme_minimal()
+```
+
+
+
+```{r}
+writeLines(readLines("src/stan_files/mod01_part.stan"))
+```
+
+```{r}
+iter <- 100
+sim_data <- list(k = length(unique(marco_noreste$estrato)),
+                 N = nrow(marco_noreste), est = marco_noreste$estrato_aux, 
+                 votantes_nom = marco_noreste$ln)
+muestras <- stan(file = "src/stan_files/mod01_part.stan", data = sim_data,
+                 iter = iter, warmup = 0, chains = 1, refresh = iter,
+                 seed = 232334, algorithm = "Fixed_param",
+                 pars = c("y", "prop", "part_est", "part"))
+
+saveRDS(muestras, "doc/muestras.rds")
+muestras <- read_rds('doc/muestras.rds')
+```
+
+```{r}
+sim_prop <- rstan::extract(muestras)$prop %>% as.numeric()
+sim_part <- rstan::extract(muestras)$part %>% as.numeric()
+sim_y <- rstan::extract(muestras)$y
+tibble(prop = sim_prop) %>% 
+  ggplot(aes(sample = prop)) +
+  geom_qq(distribution = stats::qunif) +
+  geom_abline(slope = 1, intercept = 0)
+quantile(sim_prop, c(0.05, 0.5, 0.95))
+```
+
+```{r, fig.width=6, fig.height=4}
+dim(sim_y)
+dat <- as_tibble(t(sim_y[1:15,]), .name_repair = "unique") %>% 
+  mutate(id = 1:21079) %>% gather(rep, votos, - id)
+ggplot(dat, aes(x = votos)) + facet_wrap( ~rep) +
+   geom_histogram()
+```
+
+
+```{r}
+modelo <- stan_model("src/stan_files/mod01_part_ajuste.stan")
+ajustar_sims <- function(iteracion, modelo, chains = 3){
+  datos_sim_2 <- marco_noreste %>% mutate(y = sim_y[iteracion, ])
+  muestra_sim <- muestra_part_noreste %>% left_join(datos_sim_2 %>% select(-ln))
+  data <- list(k = length(unique(muestra_part_noreste$estrato)), 
+               N = nrow(marco_noreste), 
+               n = nrow(muestra_sim), est = marco_noreste$estrato_aux, 
+             est_muestra = muestra_sim$estrato_aux,
+                 votantes_nom = marco_noreste$ln, y = muestra_sim$y,
+             votantes_nom_muestra = muestra_sim$ln)
+  ajuste <- sampling(modelo, data = data,
+                 warmup = 400, iter = 1500,  chains = chains, 
+                 thin = 3, 
+                 pars = c("part", "phi_total"))
+  sims_comp <- rstan::extract(ajuste)
+  sims_comp
+}
+iteracion <- 1
+sims_comp <- ajustar_sims(iteracion, modelo)
+ggplot(tibble(part = sims_comp$part), aes(sample = part)) + geom_qq() +
+  geom_hline(yintercept = sim_part[iteracion])
+```
+
+
+## Ajuste con datos reales
+
+
+```{r}
+muestra_part_noreste <- muestra_part_noreste %>% 
+  mutate(ln = ifelse(ln < TOTAL, TOTAL, ln))
+data <- list(k = length(unique(muestra_part_noreste$estrato_aux)), 
+             N = nrow(marco_noreste), n = nrow(muestra_part_noreste),
+             est = marco_noreste$estrato_aux, 
+             est_muestra = muestra_part_noreste$estrato_aux,
+             votantes_nom = marco_noreste$ln, y = muestra_part_noreste$TOTAL,
+             votantes_nom_muestra = muestra_part_noreste$ln)
+ajuste <- stan(file = "src/stan_files/mod01_part_ajuste.stan", data = data,
+                 warmup = 300, iter = 1500,  chains = 3, 
+                 pars = c("part", "phi_total"))
+```
+
+
+```{r}
+summary(ajuste)
+plot(ajuste, pars = c("part"))
+```
+
+## Posterior predictive checks
+
+```{r}
+ajuste_pp <- stan(file = "src/stan_files/mod01_part_ppc.stan", data = data,
+                 warmup = 100, iter = 1000,  chains = 1, 
+                 pars = c("y_sim"))
+saveRDS(ajuste_pp, 'doc/ajuste_pp.rds')
+sims_comp <- rstan::extract(ajuste_pp)
+
+```
+
+
+```{r}
+# checar por estrato
+dim(sims_comp$y_sim)
+m_tbl <- muestra_part_noreste %>% mutate(casilla = 1:dim(sims_comp$y_sim)[2]) 
+posterior_casilla <- as.data.frame(sims_comp$y_sim) %>% as_tibble %>% mutate(rep = 1:900) %>% 
+  gather(casilla, votos, -rep) %>% 
+  mutate(casilla = str_sub(casilla, 2, -1) %>% as.integer) %>% 
+  left_join(m_tbl)
+resumen <- posterior_casilla %>% group_by(rep, estrato_aux) %>%
+  summarise(votos = sum(votos), total = sum(TOTAL)) %>% 
+  group_by(estrato_aux) %>% 
+  summarise(q05 = quantile(votos, 0.05), 
+            q95 = quantile(votos, 0.95), 
+            q50 = quantile(votos, 0.5),
+            total = total[1])
+
+resumen <- resumen %>% 
+  mutate(estrato_fct = fct_reorder(factor(estrato_aux), total))
+ggplot(resumen, aes(x=estrato_fct, y = total, ymin = q05, ymax = q95)) + 
+  geom_point() +
+  geom_errorbar(colour = "red")
+
+resumen_edo <- posterior_casilla %>% group_by(rep, edo_nombre) %>%
+  summarise(votos = sum(votos), total = sum(TOTAL)) %>% 
+  group_by(edo_nombre) %>% 
+  summarise(q05 = quantile(votos, 0.05), 
+            q95 = quantile(votos, 0.95), 
+            q50 = quantile(votos, 0.5),
+            total = total[1]) %>% 
+  ungroup() %>% 
+  mutate(edo_fct = fct_reorder(factor(edo_nombre), total))
+
+ggplot(resumen_edo, aes(x=edo_fct, y = total, ymin = q05, ymax = q95)) + 
+  geom_point() +
+  geom_errorbar(colour = "red")
+```
